@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "85990886147",
+    "project_id": "free-share-c0a11",
+    "storage_bucket": "free-share-c0a11.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:85990886147:android:4595a0d0402066f177b736",
+        "android_client_info": {
+          "package_name": "com.example.free_share_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDMCLStWM8HWnXFGHvMgbPUuGfBz0fz4V8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:85990886147:android:6e48570d9a02304777b736",
+        "android_client_info": {
+          "package_name": "org.tofly.freeshare"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDMCLStWM8HWnXFGHvMgbPUuGfBz0fz4V8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

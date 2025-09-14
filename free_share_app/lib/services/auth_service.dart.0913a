@@ -1,0 +1,325 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/user_model.dart';
+
+class AuthService {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  User? get currentUser => _auth.currentUser;
+  Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  Future<UserModel?> getCurrentUserData() async {
+    try {
+      User? user = _auth.currentUser;
+      if (user != null) {
+        DocumentSnapshot doc = await _firestore
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        
+        if (doc.exists && doc.data() != null) {
+          return UserModel.fromFirestore(doc);
+        }
+      }
+      return null;
+    } catch (e) {
+      print('Error getting current user data: $e');
+      return null;
+    }
+  }
+
+  Future<UserCredential?> signInWithEmailAndPassword(
+      String email, String password) async {
+    try {
+      UserCredential result = await _auth.signInWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
+      
+      // 更新最後活動時間
+      if (result.user != null) {
+        await _updateLastActive(result.user!.uid);
+      }
+      
+      return result;
+    } on FirebaseAuthException catch (e) {
+      print('Firebase Auth Error: ${e.code} - ${e.message}');
+      rethrow;
+    } catch (e) {
+      print('Unexpected sign in error: $e');
+      rethrow;
+    }
+  }
+
+  Future<UserCredential?> createUserWithEmailAndPassword(
+      String email, String password, String username) async {
+    try {
+      // 檢查用戶名是否已存在
+      bool usernameExists = await _checkUsernameExists(username);
+      if (usernameExists) {
+        throw FirebaseAuthException(
+          code: 'username-already-exists',
+          message: '用戶名已存在',
+        );
+      }
+
+      UserCredential result = await _auth.createUserWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
+
+      print('Firebase Auth 註冊成功: ${result.user!.uid}');
+
+      if (_auth.currentUser != null) {
+        try {
+          String uid = _auth.currentUser!.uid;
+          print('使用當前用戶 UID 創建 Firestore 文檔: $uid');
+
+          // 創建用戶資料
+          UserModel newUser = UserModel(
+            uid: result.user!.uid,
+            email: email.trim(),
+            username: username.trim(),
+            createdAt: DateTime.now(),
+            lastActive: DateTime.now(),
+            rating: RatingData(),
+            transactionStats: TransactionStats(
+              joinDate: DateTime.now(),
+            ),
+            preferences: UserPreferences(),
+            isAdmin: false,
+            isBanned: false,
+          );
+  
+          print('準備寫入 Firestore: ${result.user!.uid}');
+  
+          await _firestore
+              .collection('users')
+              .doc(result.user!.uid)
+              .set(newUser.toFirestore());
+          print('Firestore 文檔創建成功');
+          return result;
+
+        } catch (firestoreError) {
+          print('Firestore 寫入失敗: $firestoreError');
+
+          // 重新拋出錯誤，讓使用者知道註冊不完整
+          throw Exception('用戶創建成功，但資料儲存失敗，請重新登入');
+//          throw Exception('註冊過程中發生錯誤，請重試');
+        }
+
+      }
+
+      return result;
+    } on FirebaseAuthException catch (e) {
+      print('Firebase Auth Error: ${e.code} - ${e.message}');
+      rethrow;
+    } catch (e) {
+      print('Unexpected registration error: $e');
+
+      // 如果發生型別轉換錯誤，但用戶已創建，嘗試創建 Firestore 文檔
+      if (_auth.currentUser != null && e.toString().contains('PigeonUserDetails')) {
+        try {
+          String uid = _auth.currentUser!.uid;
+          print('捕獲型別錯誤，但用戶已存在，創建 Firestore 文檔: $uid');
+          UserModel newUser = UserModel(
+            uid: uid,
+            email: email.trim(),
+            username: username.trim(),
+            createdAt: DateTime.now(),
+            lastActive: DateTime.now(),
+            rating: RatingData(),
+            transactionStats: TransactionStats(
+              joinDate: DateTime.now(),
+            ),
+            preferences: UserPreferences(),
+            isAdmin: false,
+            isBanned: false,
+          );
+
+          await _firestore
+              .collection('users')
+              .doc(uid)
+              .set(newUser.toFirestore());
+          print('Firestore 文檔創建成功（錯誤恢復）');
+          return null;
+
+          } catch (firestoreError) {
+            print('錯誤恢復失敗: $firestoreError');
+          }
+      }
+
+      rethrow;
+    }
+  }
+
+  Future<bool> _checkUsernameExists(String username) async {
+    try {
+      QuerySnapshot query = await _firestore
+          .collection('users')
+          .where('username', isEqualTo: username.trim())
+          .limit(1)
+          .get();
+      
+      return query.docs.isNotEmpty;
+    } catch (e) {
+      print('Error checking username: $e');
+      return false; // 如果檢查失敗，允許繼續註冊
+    }
+  }
+
+  Future<void> _updateLastActive(String uid) async {
+    try {
+      await _firestore.collection('users').doc(uid).update({
+        'lastActive': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      print('Error updating last active: $e');
+      // 不拋出錯誤，因為這不是關鍵操作
+    }
+  }
+
+  Future<void> signOut() async {
+    try {
+      await _auth.signOut();
+    } catch (e) {
+      print('Error signing out: $e');
+      if (e.toString().contains('PigeonUserDetails')) {
+        print('忽略登出時的 PigeonUserDetails 錯誤');
+        return;
+      }
+
+      rethrow;
+    }
+  }
+
+  Future<UserModel?> getUserById(String uid) async {
+    try {
+      print('AuthService: 獲取用戶資料 uid=$uid');
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get();
+
+      print('AuthService: 文檔存在=${doc.exists}');
+      
+      if (doc.exists && doc.data() != null) {
+        UserModel user = UserModel.fromFirestore(doc);
+        print('AuthService: 找到用戶=${user.username}');
+        return user;
+      }
+      return null;
+    } catch (e) {
+      print('Error getting user by ID: $e');
+      return null;
+    }
+  }
+
+  // 新增：重設密碼功能
+  Future<void> resetPassword(String email) async {
+    try {
+      await _auth.sendPasswordResetEmail(email: email.trim());
+    } on FirebaseAuthException catch (e) {
+      print('Password reset error: ${e.code} - ${e.message}');
+      rethrow;
+    } catch (e) {
+      print('Unexpected password reset error: $e');
+      rethrow;
+    }
+  }
+
+  // 新增：更新用戶資料
+  Future<void> updateUserProfile({
+    String? username,
+    String? avatarUrl,
+  }) async {
+    try {
+      User? user = _auth.currentUser;
+      if (user == null) throw Exception('用戶未登入');
+
+      Map<String, dynamic> updates = {};
+      
+      if (username != null) {
+        // 檢查新用戶名是否已存在
+        bool usernameExists = await _checkUsernameExists(username);
+        if (usernameExists) {
+          throw Exception('用戶名已存在');
+        }
+        updates['username'] = username.trim();
+      }
+      
+      if (avatarUrl != null) {
+        updates['avatarUrl'] = avatarUrl;
+      }
+
+      if (updates.isNotEmpty) {
+        updates['lastActive'] = FieldValue.serverTimestamp();
+        await _firestore
+            .collection('users')
+            .doc(user.uid)
+            .update(updates);
+      }
+    } catch (e) {
+      print('Error updating user profile: $e');
+      rethrow;
+    }
+  }
+
+  //變更密碼
+  Future<void> changePassword(String currentPassword, String newPassword) async {
+    try {
+      User? user = _auth.currentUser;
+      if (user == null) throw Exception('用戶未登入');
+  
+      // 重新認證用戶
+      String email = user.email!;
+      AuthCredential credential = EmailAuthProvider.credential(
+        email: email,
+        password: currentPassword,
+      );
+  
+      await user.reauthenticateWithCredential(credential);
+  
+      // 更新密碼
+      await user.updatePassword(newPassword);
+
+    } catch (e) {
+      print('Change password error: $e');
+      if (e.toString().contains('PigeonUserDetails')) {
+        print('忽略密碼變更時的 PigeonUserDetails 錯誤');
+        return;
+      }
+      // 處理常見的認證錯誤
+      if (e.toString().contains('wrong-password')) {
+        throw Exception('目前密碼不正確');
+      } else if (e.toString().contains('weak-password')) {
+        throw Exception('新密碼強度不足');
+      } else if (e.toString().contains('requires-recent-login')) {
+        throw Exception('需要重新登入才能變更密碼');
+      }
+
+      rethrow;
+
+    }
+  }
+
+  // 新增：檢查用戶是否被封鎖
+  Future<bool> isUserBanned(String uid) async {
+    try {
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get();
+      
+      if (doc.exists && doc.data() != null) {
+        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+        return data['isBanned'] ?? false;
+      }
+      return false;
+    } catch (e) {
+      print('Error checking ban status: $e');
+      return false;
+    }
+  }
+}

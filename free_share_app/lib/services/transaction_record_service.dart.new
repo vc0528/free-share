@@ -1,0 +1,262 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/transaction_record_model.dart';
+import '../models/item_model.dart';
+import '../models/user_model.dart';
+
+class TransactionRecordService {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  // 創建交易記錄
+  Future<String> createTransactionRecord({
+    required ItemModel item,
+    required UserModel giver,
+    required UserModel receiver,
+    required String chatRoomId,
+  }) async {
+    try {
+      TransactionRecord record = TransactionRecord(
+        id: '',
+        itemId: item.id,
+        itemTag: item.tag,
+        itemDescription: item.description,
+        itemImageUrl: item.imageUrls.isNotEmpty ? item.imageUrls.first : null,
+        giverId: giver.uid,
+        giverName: giver.username,
+        receiverId: receiver.uid,
+        receiverName: receiver.username,
+        chatRoomId: chatRoomId,
+        completedAt: DateTime.now(),
+        createdAt: DateTime.now(),
+      );
+
+      DocumentReference docRef = await _firestore
+          .collection('transaction_records')
+          .add(record.toFirestore());
+
+      print('交易記錄創建成功: ${docRef.id}');
+      return docRef.id;
+    } catch (e) {
+      print('創建交易記錄失敗: $e');
+      rethrow;
+    }
+  }
+
+  // 獲取用戶的交易記錄
+  Future<List<TransactionRecord>> getUserTransactionRecords(String userId) async {
+    try {
+      // 查詢作為分享者的記錄
+      QuerySnapshot giverQuery = await _firestore
+          .collection('transaction_records')
+          .where('giverId', isEqualTo: userId)
+          .orderBy('completedAt', descending: true)
+          .get();
+
+      // 查詢作為接收者的記錄
+      QuerySnapshot receiverQuery = await _firestore
+          .collection('transaction_records')
+          .where('receiverId', isEqualTo: userId)
+          .orderBy('completedAt', descending: true)
+          .get();
+
+      List<TransactionRecord> records = [];
+      
+      // 合併結果
+      for (var doc in giverQuery.docs) {
+        records.add(TransactionRecord.fromFirestore(doc));
+      }
+      
+      for (var doc in receiverQuery.docs) {
+        // 避免重複（理論上不會發生，因為一個人不能同時是分享者和接收者）
+        if (!records.any((record) => record.id == doc.id)) {
+          records.add(TransactionRecord.fromFirestore(doc));
+        }
+      }
+
+      // 按完成時間排序
+      records.sort((a, b) => b.completedAt.compareTo(a.completedAt));
+      
+      return records;
+    } catch (e) {
+      print('獲取交易記錄失敗: $e');
+      return [];
+    }
+  }
+
+  // 獲取特定物品的交易記錄
+  Future<TransactionRecord?> getItemTransactionRecord(String itemId) async {
+    try {
+      QuerySnapshot query = await _firestore
+          .collection('transaction_records')
+          .where('itemId', isEqualTo: itemId)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        return TransactionRecord.fromFirestore(query.docs.first);
+      }
+      
+      return null;
+    } catch (e) {
+      print('獲取物品交易記錄失敗: $e');
+      return null;
+    }
+  }
+
+  // 獲取用戶交易統計
+  Future<TransactionStats> getUserTransactionStats(String userId) async {
+    try {
+      List<TransactionRecord> records = await getUserTransactionRecords(userId);
+      return TransactionStats.fromRecords(records, userId);
+    } catch (e) {
+      print('獲取交易統計失敗: $e');
+      return TransactionStats.fromRecords([], userId);
+    }
+  }
+
+  // 獲取最近的交易記錄（用於動態顯示）
+  Future<List<TransactionRecord>> getRecentTransactionRecords({int limit = 10}) async {
+    try {
+      QuerySnapshot query = await _firestore
+          .collection('transaction_records')
+          .orderBy('completedAt', descending: true)
+          .limit(limit)
+          .get();
+
+      return query.docs
+          .map((doc) => TransactionRecord.fromFirestore(doc))
+          .toList();
+    } catch (e) {
+      print('獲取最近交易記錄失敗: $e');
+      return [];
+    }
+  }
+
+  // 檢查兩個用戶之間是否有交易記錄
+  Future<List<TransactionRecord>> getTransactionsBetweenUsers(
+    String userId1, 
+    String userId2
+  ) async {
+    try {
+      // 查詢 userId1 作為分享者，userId2 作為接收者
+      QuerySnapshot query1 = await _firestore
+          .collection('transaction_records')
+          .where('giverId', isEqualTo: userId1)
+          .where('receiverId', isEqualTo: userId2)
+          .get();
+
+      // 查詢 userId2 作為分享者，userId1 作為接收者
+      QuerySnapshot query2 = await _firestore
+          .collection('transaction_records')
+          .where('giverId', isEqualTo: userId2)
+          .where('receiverId', isEqualTo: userId1)
+          .get();
+
+      List<TransactionRecord> records = [];
+      
+      for (var doc in query1.docs) {
+        records.add(TransactionRecord.fromFirestore(doc));
+      }
+      
+      for (var doc in query2.docs) {
+        records.add(TransactionRecord.fromFirestore(doc));
+      }
+
+      // 按時間排序
+      records.sort((a, b) => b.completedAt.compareTo(a.completedAt));
+      
+      return records;
+    } catch (e) {
+      print('獲取用戶間交易記錄失敗: $e');
+      return [];
+    }
+  }
+
+  // 監聽用戶交易記錄變化
+  Stream<List<TransactionRecord>> watchUserTransactionRecords(String userId) {
+    return _firestore
+        .collection('transaction_records')
+        .where('participants', arrayContains: userId)
+        .orderBy('completedAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => TransactionRecord.fromFirestore(doc))
+            .toList());
+  }
+
+  // 刪除交易記錄（管理員功能）
+  Future<bool> deleteTransactionRecord(String recordId) async {
+    try {
+      await _firestore
+          .collection('transaction_records')
+          .doc(recordId)
+          .delete();
+      
+      print('交易記錄刪除成功: $recordId');
+      return true;
+    } catch (e) {
+      print('刪除交易記錄失敗: $e');
+      return false;
+    }
+  }
+
+  // 更新交易記錄（用於修正錯誤資訊）
+  Future<bool> updateTransactionRecord(
+    String recordId, 
+    Map<String, dynamic> updates
+  ) async {
+    try {
+      await _firestore
+          .collection('transaction_records')
+          .doc(recordId)
+          .update({
+            ...updates,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+      
+      print('交易記錄更新成功: $recordId');
+      return true;
+    } catch (e) {
+      print('更新交易記錄失敗: $e');
+      return false;
+    }
+  }
+
+  // 獲取月度交易統計
+  Future<Map<String, int>> getMonthlyTransactionStats(String userId) async {
+    try {
+      final now = DateTime.now();
+      final startOfMonth = DateTime(now.year, now.month, 1);
+      
+      QuerySnapshot query = await _firestore
+          .collection('transaction_records')
+          .where('completedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+          .get();
+
+      Map<String, int> stats = {
+        'totalThisMonth': 0,
+        'givenThisMonth': 0,
+        'receivedThisMonth': 0,
+      };
+
+      for (var doc in query.docs) {
+        TransactionRecord record = TransactionRecord.fromFirestore(doc);
+        
+        if (record.isParticipant(userId)) {
+          stats['totalThisMonth'] = stats['totalThisMonth']! + 1;
+          
+          if (record.isGiver(userId)) {
+            stats['givenThisMonth'] = stats['givenThisMonth']! + 1;
+          } else {
+            stats['receivedThisMonth'] = stats['receivedThisMonth']! + 1;
+          }
+        }
+      }
+
+      return stats;
+    } catch (e) {
+      print('獲取月度統計失敗: $e');
+      return {'totalThisMonth': 0, 'givenThisMonth': 0, 'receivedThisMonth': 0};
+    }
+  }
+}
+
